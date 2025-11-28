@@ -1,30 +1,23 @@
-# Overview
+## Overview
+This project provides a GUI for real-time speech-to-text (STT) transcription using the Whisper model, with the ability to control the transcription process via a socket interface. The application allows users to start, stop, and toggle the transcription process, and it supports various configuration options for the transcription behavior.
 
-This project, named Whisper STT GUI, provides a graphical user interface (GUI) for controlling and interacting with the Whisper speech-to-text (STT) model. The application allows users to start, stop, and toggle the recording of audio and transcribes it into text using the Whisper model.
+## Key Features
+- Real-time speech-to-text transcription using the Whisper model.
+- GUI for controlling the transcription process.
+- Socket-based remote control for starting, stopping, and toggling transcription.
+- Configurable model selection, partial mode, silence sensitivity, and extra command filters.
+- Auto-paste functionality for copying recognized text to the system clipboard.
 
-# Key Features
+## Motivation
+The project aims to provide a user-friendly interface for real-time speech-to-text transcription, enabling users to transcribe spoken content into text with minimal setup and configuration. The socket-based remote control allows for integration with other applications or scripts, making it versatile for various use cases.
 
-- **Graphical User Interface (GUI):** A user-friendly interface for controlling the Whisper STT model.
-- **Model Selection:** Allows users to choose from different Whisper model variants (e.g., "tiny", "base", "small", "medium", "large-v3").
-- **Partial Mode:** Live preview of transcriptions based on silence detection.
-- **Auto-Paste:** Option to automatically paste recognized text into the active window (requires `xdotool` on X11).
-- **Remote Control:** Ability to control the application via a socket interface.
+## Dependencies
+- Python 3
+- PyQt6
+- PyAudio
+- Torch
+- Whisper model (downloaded from the Hugging Face Model Hub)
+- Sample rate conversion library (libsamplerate)
 
-# Motivation
-
-The project aims to provide a convenient and user-friendly interface for using the Whisper speech-to-text model. It addresses the need for a more accessible and interactive way to transcribe audio into text, especially for those who prefer a graphical interface over command-line tools. The application also supports remote control, making it easier to integrate into larger workflows or scripts.
-
-# Dependencies
-
-- **Python 3:** The project is written in Python 3.
-- **PyQt6:** For the graphical user interface.
-- **torch:** For loading and using the Whisper model.
-- **samplerate:** For audio resampling.
-- **numpy:** For numerical operations.
-- **subprocess:** For running system commands.
-- **json:** For handling configuration files.
-- **socket:** For inter-process communication (IPC).
-
-# Usage
-
-The Whisper STT GUI is intended to be used for transcribing audio into text using the Whisper model. Users can start, stop, and toggle the recording of audio through the GUI. The application also supports remote control via a socket interface, allowing for integration into larger workflows or scripts. Users can configure the model, silence sensitivity, and other settings through the GUI.
+## Usage
+The project is intended to be used as a speech-to-text transcription tool with a graphical user interface. Users can start, stop, and toggle the transcription process via the GUI or through a socket interface. The application supports various configuration options to customize the transcription behavior, such as selecting the Whisper model, enabling partial mode, and configuring silence sensitivity. Additionally, the auto-paste functionality can be used to copy recognized text to the system clipboard.

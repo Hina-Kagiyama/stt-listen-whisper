@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QSlider,
+    QLineEdit,
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 import torch
@@ -23,6 +24,7 @@ import subprocess
 import json
 import os
 import sys
+import shlex
 
 ZH_SIMPLIFIED_PROMPT = (
     "请使用简体中文字符，在中文词汇附近使用中文标点，不要使用繁体字。"
@@ -420,6 +422,7 @@ class MainWindow(QWidget):
             "partial_mode": False,
             "silence_slider": DEFAULT_SILENCE_SLIDER,
             "auto_paste": False,
+            "extra_command": "",
         }
         self.load_config()
 
@@ -475,11 +478,23 @@ class MainWindow(QWidget):
 
         # Auto paste checkbox
         self.paste_checkbox = QCheckBox(
-            "Paste into active window after dictation (requires xdotool on X11)"
+            "Auto paste (wl-copy/xclip + xdotool; Linux only)"
         )
         self.paste_checkbox.setChecked(self.config.get("auto_paste", False))
         self.paste_checkbox.stateChanged.connect(self.on_paste_mode_changed)
         layout.addWidget(self.paste_checkbox)
+
+        # Extra command textbox
+        extra_row = QHBoxLayout()
+        extra_row.addWidget(QLabel("Extra command (optional):"))
+        self.extra_cmd_edit = QLineEdit()
+        self.extra_cmd_edit.setPlaceholderText(
+            "Path to program, e.g. /usr/bin/myfilter --arg"
+        )
+        self.extra_cmd_edit.setText(self.config.get("extra_command", ""))
+        self.extra_cmd_edit.textChanged.connect(self.on_extra_command_changed)
+        extra_row.addWidget(self.extra_cmd_edit)
+        layout.addLayout(extra_row)
 
         # Silence sensitivity slider
         self.slider_label = QLabel()
@@ -506,7 +521,7 @@ class MainWindow(QWidget):
         )
         layout.addWidget(self.ipc_label)
 
-        self.resize(520, 560)
+        self.resize(700, 580)
 
         # Connect combo AFTER UI is built to avoid double-loads
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
@@ -606,6 +621,7 @@ class MainWindow(QWidget):
         self.slider.setEnabled(False)
         self.paste_checkbox.setEnabled(False)
         self.partial_checkbox.setEnabled(False)
+        self.extra_cmd_edit.setEnabled(False)
         self.status_label.setText(
             f"Loading Whisper model '{model_name}' from ./model …"
         )
@@ -638,6 +654,7 @@ class MainWindow(QWidget):
             self.slider.setEnabled(True)
             self.paste_checkbox.setEnabled(True)
             self.partial_checkbox.setEnabled(True)
+            self.extra_cmd_edit.setEnabled(True)
 
     # ----- UI handlers -----
     def on_partial_mode_changed(self, state):
@@ -646,6 +663,10 @@ class MainWindow(QWidget):
 
     def on_paste_mode_changed(self, state):
         self.config["auto_paste"] = bool(state)
+        self.save_config()
+
+    def on_extra_command_changed(self, text: str):
+        self.config["extra_command"] = text
         self.save_config()
 
     def on_model_changed(self, index):
@@ -721,22 +742,160 @@ class MainWindow(QWidget):
     def on_partial_text(self, text: str):
         self.text_edit.setPlainText(text)
 
+    def _push_to_system_clipboard(self, text: str) -> bool:
+        """
+        Push text into the compositor/system clipboard via wl-copy/xclip.
+        Returns True on success, False otherwise.
+        """
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        is_wayland = (
+            session_type == "wayland"
+            or bool(os.environ.get("WAYLAND_DISPLAY"))
+        )
+
+        helper_cmd = None
+        if is_wayland:
+            helper_cmd = ["wl-copy"]
+        else:
+            helper_cmd = ["xclip", "-selection", "clipboard"]
+
+        if helper_cmd is None:
+            return False
+
+        try:
+            proc = subprocess.Popen(
+                helper_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=False,
+            )
+            proc.communicate(input=text.encode("utf-8"), timeout=1.0)
+            return proc.returncode == 0
+        except FileNotFoundError:
+            # helper not installed
+            return False
+        except Exception as e:
+            print("System clipboard helper error:", e)
+            return False
+
+    def _run_extra_command_filter(self, text: str) -> str | None:
+        """
+        If extra_command is set, run it as a filter:
+        - stdin: current text
+        - stdout: filtered text
+
+        On success, return filtered text.
+        On any failure, return None.
+        """
+        cmd_str = self.config.get("extra_command", "").strip()
+        if not cmd_str:
+            return None
+
+        try:
+            args = shlex.split(cmd_str)
+            if not args:
+                return None
+        except ValueError as e:
+            print("Extra command parse error:", e)
+            return None
+
+        try:
+            proc = subprocess.Popen(
+                args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            stdout, _ = proc.communicate(input=text, timeout=5.0)
+            if proc.returncode == 0 and stdout:
+                return stdout
+        except Exception as e:
+            print("Extra command execution error:", e)
+
+        return None
+
     def trigger_paste(self):
         """
-        Best-effort auto-paste using xdotool (X11).
-        On Wayland this may do nothing, but it won't crash the app.
+        Best-effort "auto-paste" on Linux:
+
+        1) Take recognized text from the editor.
+        2) Push it into the system clipboard (wl-copy/xclip) and Qt clipboard.
+        3) If an extra command is configured:
+             - Run it as a filter (stdin=text, stdout=new_text).
+             - On success, push new_text again into system+Qt clipboard.
+        4) Trigger Ctrl+V via xdotool to paste into the active window.
+
+        If the extra command fails, we ignore it and behave like the normal path.
         """
+        text = self.text_edit.toPlainText().strip()
+        if not text:
+            self.status_label.setText(
+                "No text to copy/paste (empty recognition result)."
+            )
+            return
+
+        # 1) Push original text to system clipboard
+        clipboard_ok = self._push_to_system_clipboard(text)
+
+        # 2) Keep Qt clipboard in sync
         try:
-            subprocess.Popen(["xdotool", "key", "ctrl+v"])
-            self.status_label.setText("Done. Text copied & paste triggered.")
-        except FileNotFoundError:
-            self.status_label.setText(
-                "Text copied. Auto-paste failed (xdotool not found)."
-            )
+            QApplication.clipboard().setText(text)
         except Exception as e:
-            self.status_label.setText(
-                f"Text copied. Auto-paste error: {e}"
+            print("Qt clipboard error:", e)
+
+        # 3) Optional extra command filter
+        filtered = self._run_extra_command_filter(text)
+        if filtered is not None:
+            # Replace text with filtered output
+            text = filtered.strip()
+            if text:
+                # Re-push filtered text to system + Qt clipboard
+                clipboard_ok = self._push_to_system_clipboard(
+                    text) or clipboard_ok
+                try:
+                    QApplication.clipboard().setText(text)
+                except Exception as e:
+                    print("Qt clipboard (filtered) error:", e)
+
+        # 4) Trigger Ctrl+V via xdotool (best-effort)
+        try:
+            subprocess.Popen(
+                ["xdotool", "key", "ctrl+v"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
+            if clipboard_ok:
+                self.status_label.setText(
+                    "Done. Text pushed to system clipboard and paste triggered."
+                )
+            else:
+                self.status_label.setText(
+                    "Paste triggered via xdotool. "
+                    "System clipboard helper unavailable; using Qt clipboard."
+                )
+        except FileNotFoundError:
+            # xdotool not installed
+            if clipboard_ok:
+                self.status_label.setText(
+                    "Text pushed to system clipboard. "
+                    "xdotool not found; press Ctrl+V manually."
+                )
+            else:
+                self.status_label.setText(
+                    "Text copied (Qt clipboard). "
+                    "Install wl-clipboard/xclip + xdotool for auto-paste."
+                )
+        except Exception as e:
+            if clipboard_ok:
+                self.status_label.setText(
+                    f"Text pushed to system clipboard, but auto-paste failed: {e}"
+                )
+            else:
+                self.status_label.setText(
+                    f"Clipboard + auto-paste error: {e}"
+                )
 
     def on_final_text(self, text: str):
         self.button.setEnabled(True)
