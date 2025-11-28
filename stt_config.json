@@ -1,0 +1,7 @@
+{
+  "model_name": "large-v3",
+  "partial_mode": false,
+  "silence_slider": 100,
+  "auto_paste": true,
+  "silence_profile": "Balanced"
+}
